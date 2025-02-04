@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <errno.h>
 
 // database include files
 #include "db.h"
@@ -108,13 +109,19 @@ int get_student(int fd, int id, student_t *s)
  */
 int add_student(int fd, int id, char *fname, char *lname, int gpa)
 {
-    student_t existing;
+    student_t existing = EMPTY_STUDENT_RECORD; // Initialize with zeros
     off_t offset = id * STUDENT_RECORD_SIZE;
-    
-    // Check for existing record
-    lseek(fd, offset, SEEK_SET);
-    read(fd, &existing, STUDENT_RECORD_SIZE);
-    
+
+    // Explicitly read instead of relying on sparse file zeros
+    if (pread(fd, &existing, STUDENT_RECORD_SIZE, offset) == -1) {
+        if (errno != ENXIO) { // Handle non-sparse file errors
+            printf(M_ERR_DB_READ);
+            return ERR_DB_FILE;
+        }
+        // Sparse region detected - treat as empty
+        memset(&existing, 0, STUDENT_RECORD_SIZE);
+    }
+
     if (memcmp(&existing, &EMPTY_STUDENT_RECORD, STUDENT_RECORD_SIZE) != 0) {
         printf(M_ERR_DB_ADD_DUP, id);
         return ERR_DB_OP;
