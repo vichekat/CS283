@@ -34,6 +34,62 @@
  */
 int build_cmd_list(char *cmd_line, command_list_t *clist)
 {
-    printf(M_NOT_IMPL);
-    return EXIT_NOT_IMPL;
+    char *token;
+    char *saveptr;
+    int cmd_count = 0;
+    char *cmd_copy = strdup(cmd_line);
+
+    // Initialize clist
+    memset(clist, 0, sizeof(command_list_t));
+
+    // Split command line by pipe character
+    token = strtok_r(cmd_copy, PIPE_STRING, &saveptr);
+    while (token != NULL && cmd_count < CMD_MAX)
+    {
+        char *cmd = token;
+        char *args = strchr(cmd, SPACE_CHAR);
+
+        // Trim leading spaces
+        while (*cmd == SPACE_CHAR) cmd++;
+
+        if (args != NULL)
+        {
+            *args = '\0';
+            args++;
+            // Trim leading spaces in args
+            while (*args == SPACE_CHAR) args++;
+        }
+
+        // Check if command is not empty
+        if (strlen(cmd) > 0)
+        {
+            strncpy(clist->commands[cmd_count].exe, cmd, EXE_MAX - 1);
+            clist->commands[cmd_count].exe[EXE_MAX - 1] = '\0';
+
+            if (args != NULL)
+            {
+                strncpy(clist->commands[cmd_count].args, args, ARG_MAX - 1);
+                clist->commands[cmd_count].args[ARG_MAX - 1] = '\0';
+            }
+
+            cmd_count++;
+        }
+
+        token = strtok_r(NULL, PIPE_STRING, &saveptr);
+    }
+
+    free(cmd_copy);
+
+    clist->num = cmd_count;
+
+    if (cmd_count == 0)
+    {
+        return WARN_NO_CMDS;
+    }
+    else if (cmd_count > CMD_MAX)
+    {
+        return ERR_TOO_MANY_COMMANDS;
+    }
+
+    return OK;
 }
