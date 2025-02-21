@@ -74,47 +74,36 @@ int clear_cmd_buff(cmd_buff_t *cmd_buff) {
 int build_cmd_buff(char *cmd_line, cmd_buff_t *cmd_buff) {
     char *token;
     int argc = 0;
-
-    // Trim leading and trailing spaces
-    while (isspace(*cmd_line)) cmd_line++;
-    char *end = cmd_line + strlen(cmd_line) - 1;
-    while (end > cmd_line && isspace(*end)) end--;
-    *(end + 1) = '\0';
-
-    // Replace multiple spaces with a single space in-place
-    char *src = cmd_line, *dst = cmd_line;
-    int space_found = 0;
-
-    while (*src != '\0') {
-        if (isspace(*src)) {
-            if (!space_found) { 
-                *dst++ = ' ';
-                space_found = 1; 
+    int in_quotes = 0;
+    char *start = cmd_line;
+    
+    while (*start != '\0' && argc < CMD_ARGV_MAX - 1) {
+        while (isspace(*start)) start++;
+        if (*start == '"') {
+            in_quotes = 1;
+            start++;
+        }
+        
+        token = start;
+        if (in_quotes) {
+            while (*start != '"' && *start != '\0') start++;
+            if (*start == '"') {
+                *start = '\0';
+                start++;
+                in_quotes = 0;
             }
         } else {
-            *dst++ = *src;
-            space_found = 0;
+            while (!isspace(*start) && *start != '\0') start++;
+            if (*start != '\0') *start++ = '\0';
         }
-        src++;
+        
+        cmd_buff->argv[argc++] = token;
     }
-    *dst = '\0';
-
-    // Parse tokens
-    char *start = cmd_line;
-    while (*start != '\0' && argc < CMD_ARGV_MAX - 1) {
-        token = start;
-        while (!isspace(*start) && *start != '\0') start++;
-        if (*start != '\0') *start++ = '\0';
-
-        cmd_buff->argv[argc++] = strdup(token);
-
-        while (isspace(*start)) start++; // Skip spaces
-    }
-
+    
     cmd_buff->argv[argc] = NULL;
     cmd_buff->argc = argc;
-
-    return OK;
+    
+    return (argc > 0) ? OK : WARN_NO_CMDS;
 }
 
 Built_In_Cmds match_command(const char *input) {
@@ -125,14 +114,11 @@ Built_In_Cmds match_command(const char *input) {
 
 Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
     Built_In_Cmds bi_cmd = match_command(cmd->argv[0]);
-
     switch (bi_cmd) {
         case BI_CMD_EXIT:
             return BI_CMD_EXIT;
-
         case BI_CMD_CD:
-            if (cmd->argc == 1) {
-                // Change to home directory
+            if (cmd->argc == 1 || (cmd->argc == 2 && strcmp(cmd->argv[1], "~") == 0)) {
                 const char *home_dir = getenv("HOME");
                 if (home_dir == NULL) {
                     fprintf(stderr, "cd: HOME not set\n");
@@ -143,7 +129,6 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
                     return BI_RC;
                 }
             } else if (cmd->argc == 2) {
-                // Change to specified directory
                 if (chdir(cmd->argv[1]) != 0) {
                     perror("cd");
                     return BI_RC;
@@ -152,8 +137,6 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
                 fprintf(stderr, "cd: too many arguments\n");
                 return BI_RC;
             }
-
-            // Print current directory once
             char cwd[SH_CMD_MAX];
             if (getcwd(cwd, sizeof(cwd)) != NULL) {
                 printf("%s\n", cwd);
@@ -161,7 +144,6 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
                 perror("getcwd");
             }
             return BI_EXECUTED;
-
         default:
             return BI_NOT_BI;
     }
@@ -169,57 +151,60 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
 
 int exec_cmd(cmd_buff_t *cmd) {
     Built_In_Cmds bi_cmd = exec_built_in_cmd(cmd);
-
     if (bi_cmd == BI_EXECUTED || bi_cmd == BI_RC) {
         return OK; // Built-in command executed successfully
     }
-
-    pid_t pid = fork();
-
-    if (pid == 0) { // Child process
-        execvp(cmd->argv[0], cmd->argv);
-        perror("execvp"); // If execvp fails
-        exit(ERR_EXEC_CMD);
-
-    } else if (pid > 0) { // Parent process
-        int status;
-        waitpid(pid, &status, 0);
-        return WIFEXITED(status) ? WEXITSTATUS(status) : ERR_EXEC_CMD;
-
-    } else { // Fork failed
-        perror("fork");
-        return ERR_EXEC_CMD;
+    if (bi_cmd == BI_NOT_BI) {
+        pid_t pid = fork();
+        if (pid == 0) { // Child process
+            execvp(cmd->argv[0], cmd->argv);
+            perror("execvp");
+            exit(ERR_EXEC_CMD);
+        } else if (pid > 0) { // Parent process
+            int status;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status)) {
+                return WEXITSTATUS(status);
+            } else {
+                return ERR_EXEC_CMD;
+            }
+        } else { // Fork failed
+            perror("fork");
+            return ERR_EXEC_CMD;
+        }
     }
+    return OK;
 }
 
 int exec_local_cmd_loop() {
     cmd_buff_t cmd;
-    
     alloc_cmd_buff(&cmd);
-
     while (1) {
-        printf(SH_PROMPT);
-        fflush(stdout); // Ensure prompt is displayed
-
+        printf("%s", SH_PROMPT);
+        fflush(stdout);
         char input[SH_CMD_MAX];
-        
-        if (fgets(input, sizeof(input), stdin) == NULL) { 
-            printf("\n"); 
-            break; 
+        if (fgets(input, sizeof(input), stdin) == NULL) {
+            printf("\n");
+            break;
         }
-
-        input[strcspn(input, "\n")] = '\0'; // Remove newline
-
+        input[strcspn(input, "\n")] = '\0';
         clear_cmd_buff(&cmd);
-
-        if (build_cmd_buff(input, &cmd) != OK || cmd.argc == 0) continue;
-
+        int build_result = build_cmd_buff(input, &cmd);
+        if (build_result != OK || cmd.argc == 0) {
+            if (build_result == WARN_NO_CMDS) {
+                continue;
+            }
+            printf("%s\n", CMD_WARN_NO_CMD);
+            continue;
+        }
         if (strcmp(cmd.argv[0], EXIT_CMD) == 0) break;
-
-        exec_cmd(&cmd);
+        int exec_result = exec_cmd(&cmd);
+        if (exec_result != OK) {
+            printf("%s\n", CMD_ERR_EXECUTE);
+        }
     }
-
     free_cmd_buff(&cmd);
-    
     return OK_EXIT;
 }
+
+

@@ -7,6 +7,7 @@
 #define ARG_MAX 256
 #define CMD_MAX 8
 #define CMD_ARGV_MAX (CMD_MAX + 1)
+#define CMD_ERR_EXECUTE "Error: Command execution failed"
 // Longest command that can be read from the shell
 #define SH_CMD_MAX EXE_MAX + ARG_MAX
 
