@@ -12,3 +12,11 @@ EOF
     # Assertions
     [ "$status" -eq 0 ]
 }
+
+@test "Test exit command" {
+    run bash -c "echo 'exit' | ./dsh"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"exiting..."* ]]
+}
+
+

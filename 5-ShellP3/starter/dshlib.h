@@ -16,11 +16,13 @@ typedef struct command
     char args[ARG_MAX];
 } command_t;
 
-typedef struct cmd_buff
-{
-    int  argc;
+typedef struct cmd_buff {
+    int argc;
     char *argv[CMD_ARGV_MAX];
     char *_cmd_buffer;
+    char *input_redirect;
+    char *output_redirect;
+    int append_mode;
 } cmd_buff_t;
 
 /* WIP - Move to next assignment 
@@ -33,10 +35,11 @@ typedef struct command{
 }command_t;
 */
 
-typedef struct command_list{
+typedef struct command_list {
     int num;
     cmd_buff_t commands[CMD_MAX];
-}command_list_t;
+    int pipe_fds[CMD_MAX - 1][2];
+} command_list_t;
 
 //Special character #defines
 #define SPACE_CHAR  ' '
@@ -83,11 +86,10 @@ int exec_cmd(cmd_buff_t *cmd);
 int execute_pipeline(command_list_t *clist);
 
 
-
-
 //output constants
 #define CMD_OK_HEADER       "PARSED COMMAND LINE - TOTAL COMMANDS %d\n"
 #define CMD_WARN_NO_CMD     "warning: no commands provided\n"
 #define CMD_ERR_PIPE_LIMIT  "error: piping limited to %d commands\n"
+#define CMD_ERR_EXECUTE "error: command execution failed\n"
 
 #endif
