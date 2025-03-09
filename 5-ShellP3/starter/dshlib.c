@@ -59,7 +59,14 @@
     cmd_buff->_cmd_buffer = malloc(SH_CMD_MAX);
     if (cmd_buff->_cmd_buffer == NULL) {
         return ERR_MEMORY;
-    } // ADD THIS CLOSING BRACE
+    }
+    cmd_buff->argc = 0;
+    memset(cmd_buff->argv, 0, sizeof(cmd_buff->argv));
+    cmd_buff->input_redirect = NULL;
+    cmd_buff->output_redirect = NULL;
+    cmd_buff->append_mode = 0;
+    cmd_buff->input_fd = STDIN_FILENO;
+    cmd_buff->output_fd = STDOUT_FILENO;
     return OK;
 }
 
@@ -72,26 +79,68 @@ int clear_cmd_buff(cmd_buff_t *cmd_buff) {
     cmd_buff->argc = 0;
     memset(cmd_buff->argv, 0, sizeof(cmd_buff->argv));
     memset(cmd_buff->_cmd_buffer, 0, SH_CMD_MAX);
+    cmd_buff->input_redirect = NULL;
+    cmd_buff->output_redirect = NULL;
+    cmd_buff->append_mode = 0;
+    cmd_buff->input_fd = STDIN_FILENO;
+    cmd_buff->output_fd = STDOUT_FILENO;
     return OK;
 }
 
 int build_cmd_buff(char *cmd_line, cmd_buff_t *cmd_buff) {
+    strncpy(cmd_buff->_cmd_buffer, cmd_line, SH_CMD_MAX - 1);
+    cmd_buff->_cmd_buffer[SH_CMD_MAX - 1] = '\0';
     int argc = 0;
-    char *token = strtok(cmd_line, " \t\n");
     
-    while (token != NULL && argc < CMD_ARGV_MAX - 1) {
-        cmd_buff->argv[argc++] = token;
-        token = strtok(NULL, " \t\n");
+    // We need a more robust tokenization approach for handling quoted arguments
+    char *p = cmd_buff->_cmd_buffer;
+    char *start = p;
+    int in_quotes = 0;
+    char quote_char = 0;
+    
+    while (*p && argc < CMD_ARGV_MAX - 1) {
+        // Skip leading whitespace if not in quotes
+        if (!in_quotes && (*p == ' ' || *p == '\t')) {
+            *p = '\0';
+            if (p > start && *(p-1) != '\0') {
+                cmd_buff->argv[argc++] = start;
+            }
+            p++;
+            start = p;
+            continue;
+        }
+        
+        // Handle quotes
+        if (*p == '\'' || *p == '"') {
+            if (!in_quotes) {
+                // Start of quoted section
+                in_quotes = 1;
+                quote_char = *p;
+                start = p + 1;  // Skip the opening quote
+            } else if (*p == quote_char) {
+                // End of quoted section
+                *p = '\0';  // Replace closing quote with null terminator
+                cmd_buff->argv[argc++] = start;
+                in_quotes = 0;
+                start = p + 1;
+            }
+        }
+        
+        p++;
+    }
+    
+    // Add the last argument if there is one
+    if (p > start && *start != '\0') {
+        cmd_buff->argv[argc++] = start;
     }
     
     cmd_buff->argv[argc] = NULL;
     cmd_buff->argc = argc;
-    
     return (argc > 0) ? OK : WARN_NO_CMDS;
 }
 
 Built_In_Cmds match_command(const char *input) {
-    if (strcmp(input, "exit") == 0) return BI_CMD_EXIT;
+    if (strcmp(input, EXIT_CMD) == 0) return BI_CMD_EXIT;
     if (strcmp(input, "cd") == 0) return BI_CMD_CD;
     return BI_NOT_BI;
 }
@@ -100,6 +149,7 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
     Built_In_Cmds bi_cmd = match_command(cmd->argv[0]);
     switch (bi_cmd) {
         case BI_CMD_EXIT:
+            printf("exiting...\n");
             return BI_CMD_EXIT;
         case BI_CMD_CD:
             if (cmd->argc == 1 || (cmd->argc == 2 && strcmp(cmd->argv[1], "~") == 0)) {
@@ -121,13 +171,6 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
                 fprintf(stderr, "cd: too many arguments\n");
                 return BI_NOT_BI;
             }
-            char cwd[SH_CMD_MAX];
-            if (getcwd(cwd, sizeof(cwd)) != NULL) {
-                printf("%s\n", cwd);
-            } else {
-                perror("getcwd");
-                return BI_NOT_BI;
-            }
             return BI_EXECUTED;
         default:
             return BI_NOT_BI;
@@ -135,97 +178,106 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
 }
 
 int exec_cmd(cmd_buff_t *cmd) {
-    // Handle input redirection
     if (cmd->input_redirect) {
-        int fd = open(cmd->input_redirect, O_RDONLY);
-        if (fd < 0) {
+        cmd->input_fd = open(cmd->input_redirect, O_RDONLY);
+        if (cmd->input_fd < 0) {
             perror("open input");
             return ERR_EXEC_CMD;
         }
-        dup2(fd, STDIN_FILENO);
-        close(fd);
+        dup2(cmd->input_fd, STDIN_FILENO);
+        close(cmd->input_fd);
     }
-
-    // Handle output redirection
     if (cmd->output_redirect) {
         int flags = O_WRONLY | O_CREAT | (cmd->append_mode ? O_APPEND : O_TRUNC);
-        int fd = open(cmd->output_redirect, flags, 0644);
-        if (fd < 0) {
+        cmd->output_fd = open(cmd->output_redirect, flags, 0644);
+        if (cmd->output_fd < 0) {
             perror("open output");
             return ERR_EXEC_CMD;
         }
-        dup2(fd, STDOUT_FILENO);
-        close(fd);
+        dup2(cmd->output_fd, STDOUT_FILENO);
+        close(cmd->output_fd);
     }
-
-    // Execute the command
     execvp(cmd->argv[0], cmd->argv);
     perror("execvp");
     exit(ERR_EXEC_CMD);
 }
 
-int execute_pipeline(command_list_t *clist) {
-    int i, status;
-    pid_t pid;
-    int prev_pipe = -1;
-    int pipes[2];
+int execute_pipeline_commands(command_list_t *cmd_list) {
+    int pipefds[2 * (CMD_MAX - 1)];
+    pid_t pids[CMD_MAX];
+    int i;
 
-    // Close all pipes first to prevent leaks
-    for (i = 0; i < CMD_MAX - 1; i++) {
-        close(clist->pipe_fds[i][0]);
-        close(clist->pipe_fds[i][1]);
+    // Check for empty pipeline segments explicitly
+    for (i = 0; i < cmd_list->count; i++) {
+        if (cmd_list->commands[i].argc == 0 || cmd_list->commands[i].argv[0] == NULL) {
+            fprintf(stderr, "error: empty pipeline segment\n");
+            return ERR_CMD_ARGS_BAD;
+        }
     }
 
-    for (i = 0; i < clist->num; i++) {
-        if (i < clist->num - 1) {
-            if (pipe(pipes) == -1) {
-                perror("pipe");
-                return ERR_EXEC_CMD;
-            }
-            clist->pipe_fds[i][0] = pipes[0];
-            clist->pipe_fds[i][1] = pipes[1];
-        }
-
-        pid = fork();
-        if (pid < 0) {
-            perror("fork");
+    // Create pipes
+    for (i = 0; i < cmd_list->count - 1; i++) {
+        if (pipe(pipefds + i * 2) < 0) {
+            perror("pipe failed");
             return ERR_EXEC_CMD;
-        } 
-        else if (pid == 0) { // Child
-            // Input from previous
-            if (i > 0) {
-                dup2(prev_pipe, STDIN_FILENO);
-                close(prev_pipe);
-            }
-            
-            // Output to next
-            if (i < clist->num - 1) {
-                close(pipes[0]);
-                dup2(pipes[1], STDOUT_FILENO);
-                close(pipes[1]);
-            }
-            
-            // Execute command
-            exec_cmd(&clist->commands[i]);
-            exit(EXIT_FAILURE);
-        }
-        else { // Parent
-            // Cleanup previous pipe
-            if (i > 0) close(prev_pipe);
-            
-            // Store current pipe for next iteration
-            if (i < clist->num - 1) {
-                close(pipes[1]);
-                prev_pipe = pipes[0];
-            }
-            
-            // Wait only for the last command
-            if (i == clist->num - 1) {
-                waitpid(pid, &status, 0);
-            }
         }
     }
-    return OK;
+
+    // Execute commands
+    for (i = 0; i < cmd_list->count; i++) {
+        Built_In_Cmds bi_cmd = match_command(cmd_list->commands[i].argv[0]);
+
+        // Handle built-in commands only if single command without pipes
+        if (bi_cmd != BI_NOT_BI && cmd_list->count == 1) {
+            Built_In_Cmds res = exec_built_in_cmd(&cmd_list->commands[i]);
+            return (res == BI_EXECUTED || res == BI_CMD_EXIT) ? OK : ERR_EXEC_CMD;
+        }
+
+        pids[i] = fork();
+        
+        if (pids[i] < 0) {
+            perror("fork failed");
+            return ERR_EXEC_CMD;
+        }
+
+        if (pids[i] == 0) { // Child process
+            // Redirect input from previous command's pipe
+            if (i > 0) {
+                dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+            }
+            
+            // Redirect output to next command's pipe
+            if (i < cmd_list->count - 1) {
+                dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+            }
+
+            // Close all pipe fds in child process
+            for (int j = 0; j < 2 * (cmd_list->count - 1); j++)
+                close(pipefds[j]);
+
+            execvp(cmd_list->commands[i].argv[0], cmd_list->commands[i].argv);
+            
+            // If execvp fails:
+            fprintf(stderr, "execvp: %s: command not found\n", cmd_list->commands[i].argv[0]);
+            exit(ERR_EXEC_CMD);
+        }
+    }
+
+    // Close all pipe fds in parent process
+    for (i = 0; i < 2 * (cmd_list->count - 1); i++)
+        close(pipefds[i]);
+
+    int status;
+    int final_status = OK;
+
+    for (i = 0; i < cmd_list->count; i++) {
+        waitpid(pids[i], &status, 0);
+        
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != OK)
+            final_status = ERR_EXEC_CMD;
+    }
+
+    return final_status;
 }
 
 int build_cmd_list(char *cmd_line, command_list_t *clist) {
@@ -233,54 +285,99 @@ int build_cmd_list(char *cmd_line, command_list_t *clist) {
     char *saveptr;
     int cmd_count = 0;
 
-    token = strtok_r(cmd_line, "|", &saveptr);
-    while (token != NULL && cmd_count < CMD_MAX) {
+    token = strtok_r(cmd_line, PIPE_STRING, &saveptr);
+    
+    while (token != NULL) {
+        
+        while (*token == SPACE_CHAR)
+            token++;
+
+        char *end = token + strlen(token) - 1;
+        
+        while (end > token && *end == SPACE_CHAR)
+            *end-- = '\0';
+
+        if(strlen(token)==0){
+           fprintf(stderr,"error: empty pipeline segment\n");
+           return ERR_CMD_ARGS_BAD;
+        }
+
+        if (cmd_count >= CMD_MAX) {
+           fprintf(stderr,CMD_ERR_PIPE_LIMIT,CMD_MAX);
+           return ERR_TOO_MANY_COMMANDS;
+        }
+
+        alloc_cmd_buff(&clist->commands[cmd_count]);
+        
         build_cmd_buff(token, &clist->commands[cmd_count]);
+        
         cmd_count++;
-        token = strtok_r(NULL, "|", &saveptr);
+
+        token = strtok_r(NULL, PIPE_STRING, &saveptr);
     }
 
-    clist->num = cmd_count;
-    return (cmd_count > 0) ? OK : WARN_NO_CMDS;
+    clist->count = cmd_count;
+
+    return (cmd_count > 0)? OK : WARN_NO_CMDS;
 }
 
-int free_cmd_list(command_list_t *cmd_lst){
-    for (int i = 0; i < cmd_lst->num; i++){
+int free_cmd_list(command_list_t *cmd_lst) {
+    for (int i = 0; i < cmd_lst->count; i++) {
         free_cmd_buff(&cmd_lst->commands[i]);
     }
     return OK;
 }
 
-int exec_local_cmd_loop() {
-    command_list_t clist;
-    char input[SH_CMD_MAX];
+int exec_local_cmd_loop(void) {
+    char line[SH_CMD_MAX];
+    command_list_t cmd_list = {0};
+    int is_interactive = isatty(STDIN_FILENO);
+
     while (1) {
-        printf("%s", SH_PROMPT);
-        fflush(stdout);
-        if (fgets(input, sizeof(input), stdin) == NULL) {
-            printf("\n");
-            break;
+        if (is_interactive) {
+            printf("%s", SH_PROMPT);
+            fflush(stdout);
         }
-        input[strcspn(input, "\n")] = '\0';
 
-        int build_result = build_cmd_list(input, &clist);
-        if (build_result != OK || clist.num == 0) {
-            if (build_result == WARN_NO_CMDS) {
-                continue;
+        if (!fgets(line, SH_CMD_MAX, stdin)) {
+            if (!feof(stdin)) {
+                perror("fgets failed");
+                return ERR_MEMORY;
             }
-            printf("%s\n", CMD_WARN_NO_CMD);
-            continue;
+            break; // EOF reached
         }
 
-        if (strcmp(clist.commands[0].argv[0], EXIT_CMD) == 0) {
+        line[strcspn(line, "\n")] = '\0';
+
+        if (is_interactive && strcmp(line, EXIT_CMD) == 0) {
             printf("exiting...\n");
             break;
         }
 
-        int exec_result = execute_pipeline(&clist);
-        if (exec_result != OK) {
-            printf("%s\n", CMD_ERR_EXECUTE);
+        if (strlen(line) == 0)
+            continue;
+
+        int parse_result = build_cmd_list(line, &cmd_list);
+        if (parse_result == WARN_NO_CMDS)
+            continue;
+
+        if (parse_result == ERR_TOO_MANY_COMMANDS) {
+            fprintf(stderr, CMD_ERR_PIPE_LIMIT, CMD_MAX);
+            free_cmd_list(&cmd_list);
+            continue;
+        } else if (parse_result != OK) {
+            fprintf(stderr, "error: command parsing failed\n");
+            continue;
         }
+
+        int result = execute_pipeline_commands(&cmd_list);
+
+        free_cmd_list(&cmd_list);
+        cmd_list.count = 0;
+
+        if (result == BI_CMD_EXIT)
+            break;
     }
+
     return OK;
 }

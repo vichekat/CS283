@@ -9,6 +9,9 @@
 #define CMD_ARGV_MAX (CMD_MAX + 1)
 // Longest command that can be read from the shell
 #define SH_CMD_MAX EXE_MAX + ARG_MAX
+#define LINE_BUFF_SIZE 1024    // Maximum length of input line
+#define MAX_CMD_COUNT 10       // Maximum number of commands in a pipeline
+#define MAX_ARG_COUNT 20       // Maximum number of arguments per command
 
 typedef struct command
 {
@@ -23,6 +26,8 @@ typedef struct cmd_buff {
     char *input_redirect;
     char *output_redirect;
     int append_mode;
+    int input_fd;              // Input file descriptor (for redirection)
+    int output_fd;             // Output file descriptor (for redirection)
 } cmd_buff_t;
 
 /* WIP - Move to next assignment 
@@ -39,6 +44,7 @@ typedef struct command_list {
     int num;
     cmd_buff_t commands[CMD_MAX];
     int pipe_fds[CMD_MAX - 1][2];
+    int count;
 } command_list_t;
 
 //Special character #defines
@@ -55,7 +61,7 @@ typedef struct command_list {
 #define WARN_NO_CMDS            -1
 #define ERR_TOO_MANY_COMMANDS   -2
 #define ERR_CMD_OR_ARGS_TOO_BIG -3
-#define ERR_CMD_ARGS_BAD        -4      //for extra credit
+#define ERR_CMD_ARGS_BAD        -4
 #define ERR_MEMORY              -5
 #define ERR_EXEC_CMD            -6
 #define OK_EXIT                 -7
@@ -81,9 +87,10 @@ Built_In_Cmds match_command(const char *input);
 Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd);
 
 //main execution context
-int exec_local_cmd_loop();
+int exec_local_cmd_loop(void);
 int exec_cmd(cmd_buff_t *cmd);
-int execute_pipeline(command_list_t *clist);
+int execute_pipeline_commands(command_list_t *clist);
+void parse_command(char *input, cmd_buff_t *cmd);
 
 
 //output constants
