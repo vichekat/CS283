@@ -1,9 +1,6 @@
 # Compiler settings
 CC = gcc
-CFLAGS = -Wall -Wextra -g -largp -L /opt/homebrew/Cellar/argp-standalone/1.3/lib/ -I /opt/homebrew/Cellar/argp-standalone/1.3/include/
-
-dsh: dsh_cli.c dshlib.c rsh_cli.c rsh_server.c
-	gcc $(CFLAGS) -Wall -Wextra -g -o dsh dsh_cli.c dshlib.c rsh_cli.c rsh_server.c $(LDFLAGS)
+CFLAGS = -Wall -Wextra -g
 
 # Target executable name
 TARGET = dsh
