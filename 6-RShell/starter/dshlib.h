@@ -26,6 +26,8 @@ typedef struct cmd_buff
     char *input_file;  // extra credit, stores input redirection file (for `<`)
     char *output_file; // extra credit, stores output redirection file (for `>`)
     bool append_mode; // extra credit, sets append mode fomr output_file
+    int input_fd;
+    int output_fd;
 } cmd_buff_t;
 
 typedef struct command_list{

@@ -80,8 +80,8 @@
     }
     cmd_buff->argc = 0;
     memset(cmd_buff->argv, 0, sizeof(cmd_buff->argv));
-    cmd_buff->input_redirect = NULL;
-    cmd_buff->output_redirect = NULL;
+    cmd_buff->input_file = NULL;
+    cmd_buff->output_file = NULL;
     cmd_buff->append_mode = 0;
     cmd_buff->input_fd = STDIN_FILENO;
     cmd_buff->output_fd = STDOUT_FILENO;
@@ -97,8 +97,8 @@ int clear_cmd_buff(cmd_buff_t *cmd_buff) {
     cmd_buff->argc = 0;
     memset(cmd_buff->argv, 0, sizeof(cmd_buff->argv));
     memset(cmd_buff->_cmd_buffer, 0, SH_CMD_MAX);
-    cmd_buff->input_redirect = NULL;
-    cmd_buff->output_redirect = NULL;
+    cmd_buff->input_file = NULL;
+    cmd_buff->output_file = NULL;
     cmd_buff->append_mode = 0;
     cmd_buff->input_fd = STDIN_FILENO;
     cmd_buff->output_fd = STDOUT_FILENO;
@@ -196,8 +196,8 @@ Built_In_Cmds exec_built_in_cmd(cmd_buff_t *cmd) {
 }
 
 int exec_cmd(cmd_buff_t *cmd) {
-    if (cmd->input_redirect) {
-        cmd->input_fd = open(cmd->input_redirect, O_RDONLY);
+    if (cmd->input_file) {
+        cmd->input_fd = open(cmd->input_file, O_RDONLY);
         if (cmd->input_fd < 0) {
             perror("open input");
             return ERR_EXEC_CMD;
@@ -205,9 +205,9 @@ int exec_cmd(cmd_buff_t *cmd) {
         dup2(cmd->input_fd, STDIN_FILENO);
         close(cmd->input_fd);
     }
-    if (cmd->output_redirect) {
+    if (cmd->output_file) {
         int flags = O_WRONLY | O_CREAT | (cmd->append_mode ? O_APPEND : O_TRUNC);
-        cmd->output_fd = open(cmd->output_redirect, flags, 0644);
+        cmd->output_fd = open(cmd->output_file, flags, 0644);
         if (cmd->output_fd < 0) {
             perror("open output");
             return ERR_EXEC_CMD;
@@ -226,7 +226,7 @@ int execute_pipeline_commands(command_list_t *cmd_list) {
     int i;
 
     // Check for empty pipeline segments explicitly
-    for (i = 0; i < cmd_list->count; i++) {
+    for (i = 0; i < cmd_list->num; i++) {
         if (cmd_list->commands[i].argc == 0 || cmd_list->commands[i].argv[0] == NULL) {
             fprintf(stderr, "error: empty pipeline segment\n");
             return ERR_CMD_ARGS_BAD;
@@ -234,7 +234,7 @@ int execute_pipeline_commands(command_list_t *cmd_list) {
     }
 
     // Create pipes
-    for (i = 0; i < cmd_list->count - 1; i++) {
+    for (i = 0; i < cmd_list->num - 1; i++) {
         if (pipe(pipefds + i * 2) < 0) {
             perror("pipe failed");
             return ERR_EXEC_CMD;
@@ -242,11 +242,11 @@ int execute_pipeline_commands(command_list_t *cmd_list) {
     }
 
     // Execute commands
-    for (i = 0; i < cmd_list->count; i++) {
+    for (i = 0; i < cmd_list->num; i++) {
         Built_In_Cmds bi_cmd = match_command(cmd_list->commands[i].argv[0]);
 
         // Handle built-in commands only if single command without pipes
-        if (bi_cmd != BI_NOT_BI && cmd_list->count == 1) {
+        if (bi_cmd != BI_NOT_BI && cmd_list->num == 1) {
             Built_In_Cmds res = exec_built_in_cmd(&cmd_list->commands[i]);
             return (res == BI_EXECUTED || res == BI_CMD_EXIT) ? OK : ERR_EXEC_CMD;
         }
@@ -265,12 +265,12 @@ int execute_pipeline_commands(command_list_t *cmd_list) {
             }
             
             // Redirect output to next command's pipe
-            if (i < cmd_list->count - 1) {
+            if (i < cmd_list->num - 1) {
                 dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
             }
 
             // Close all pipe fds in child process
-            for (int j = 0; j < 2 * (cmd_list->count - 1); j++)
+            for (int j = 0; j < 2 * (cmd_list->num - 1); j++)
                 close(pipefds[j]);
 
             execvp(cmd_list->commands[i].argv[0], cmd_list->commands[i].argv);
@@ -282,13 +282,13 @@ int execute_pipeline_commands(command_list_t *cmd_list) {
     }
 
     // Close all pipe fds in parent process
-    for (i = 0; i < 2 * (cmd_list->count - 1); i++)
+    for (i = 0; i < 2 * (cmd_list->num - 1); i++)
         close(pipefds[i]);
 
     int status;
     int final_status = OK;
 
-    for (i = 0; i < cmd_list->count; i++) {
+    for (i = 0; i < cmd_list->num; i++) {
         waitpid(pids[i], &status, 0);
         
         if (!WIFEXITED(status) || WEXITSTATUS(status) != OK)
@@ -334,13 +334,13 @@ int build_cmd_list(char *cmd_line, command_list_t *clist) {
         token = strtok_r(NULL, PIPE_STRING, &saveptr);
     }
 
-    clist->count = cmd_count;
+    clist->num = cmd_count;
 
     return (cmd_count > 0)? OK : WARN_NO_CMDS;
 }
 
 int free_cmd_list(command_list_t *cmd_lst) {
-    for (int i = 0; i < cmd_lst->count; i++) {
+    for (int i = 0; i < cmd_lst->num; i++) {
         free_cmd_buff(&cmd_lst->commands[i]);
     }
     return OK;
@@ -391,7 +391,7 @@ int exec_local_cmd_loop(void) {
         int result = execute_pipeline_commands(&cmd_list);
 
         free_cmd_list(&cmd_list);
-        cmd_list.count = 0;
+        cmd_list.num = 0;
 
         if (result == BI_CMD_EXIT)
             break;

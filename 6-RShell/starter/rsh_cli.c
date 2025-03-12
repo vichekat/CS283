@@ -92,9 +92,9 @@
  */
 int exec_remote_cmd_loop(char *address, int port)
 {
-    char *cmd_buff;
-    char *rsp_buff;
-    int cli_socket;
+    char *cmd_buff = NULL;
+    char *rsp_buff = NULL;
+    int cli_socket = 0;
     ssize_t io_size;
     int is_eof;
 

@@ -207,7 +207,9 @@ int boot_server(char *ifaces, int port){
  */
 int process_cli_requests(int svr_socket){
     int     cli_socket;
-    int     rc = OK;    
+    int     rc = OK;
+    struct sockaddr_in cli_addr;
+    socklen_t cli_len = sizeof(cli_addr);    
 
     while(1){
         /// Accept client connection
@@ -456,11 +458,11 @@ int send_message_string(int cli_socket, char *buff){
  *                  get this value. 
  */
 int rsh_execute_pipeline(int cli_sock, command_list_t *clist) {
-    int pipes[clist->num - 1][2];  // Array of pipes
-    pid_t pids[clist->num];
-    int  pids_st[clist->num];         // Array to store process IDs
+    int pipes[CMD_MAX-1][2]; // Array of pipes
+    pid_t pids[CMD_MAX];
+    int pids_status[CMD_MAX]; // Array to store process statuses
     Built_In_Cmds bi_cmd;
-    int exit_code;
+    int exit_code = 0;
 
     // Check for built-in commands if single command
     if (clist->num == 1) {
@@ -504,7 +506,7 @@ int rsh_execute_pipeline(int cli_sock, command_list_t *clist) {
             }
             
             // Set up stdout to next pipe or client socket
-            if (i == clist->count - 1) {
+            if (i == clist->num - 1) {
                 // Last command sends output to client socket
                 dup2(cli_sock, STDOUT_FILENO);
                 dup2(cli_sock, STDERR_FILENO);
@@ -514,7 +516,7 @@ int rsh_execute_pipeline(int cli_sock, command_list_t *clist) {
             }
             
             // Close all pipe file descriptors
-            for (int j = 0; j < clist->count - 1; j++) {
+            for (int j = 0; j < clist->num - 1; j++) {
                 close(pipes[j][0]);
                 close(pipes[j][1]);
             }
@@ -528,9 +530,6 @@ int rsh_execute_pipeline(int cli_sock, command_list_t *clist) {
         }
     }
 
-    }
-
-
     // Parent process: close all pipe ends
     for (int i = 0; i < clist->num - 1; i++) {
         close(pipes[i][0]);
@@ -539,16 +538,16 @@ int rsh_execute_pipeline(int cli_sock, command_list_t *clist) {
 
     // Wait for all children
     for (int i = 0; i < clist->num; i++) {
-        waitpid(pids[i], &pids_st[i], 0);
+        waitpid(pids[i], &pids_status[i], 0);
     }
 
     //by default get exit code of last process
     //use this as the return value
-    exit_code = WEXITSTATUS(pids_st[clist->num - 1]);
+    exit_code = WEXITSTATUS(pids_status[clist->num - 1]);
     for (int i = 0; i < clist->num; i++) {
         //if any commands in the pipeline are EXIT_SC
         //return that to enable the caller to react
-        if (WEXITSTATUS(pids_st[i]) == EXIT_SC)
+        if (WEXITSTATUS(pids_status[i]) == EXIT_SC)
             exit_code = EXIT_SC;
     }
     return exit_code;
